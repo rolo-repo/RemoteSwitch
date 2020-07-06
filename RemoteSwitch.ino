@@ -1,4 +1,3 @@
-
 #define ENABLE_LOGGER
 #include "SerialOutput.h"
 #include "Constants.h"
@@ -11,7 +10,6 @@
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
-#define  ARDUINO_ARCH_ESP8266
 #include "EEPROM_Adapter.h"
 #include <TimeManager.h>
 
@@ -42,13 +40,13 @@ arduino::utils::Timer displayTimer("[Display]");
 
 ESP8266WebServer  server(80);
 
-WiFiEventHandler onGotIPhandler;
-WiFiEventHandler onDisconnect;
+WidgetLED ackLed(V3);
 
 void swchOn()
 {
 	LOG_MSG("Switch ON");
 	digitalWrite(ENB_PIN, HIGH);
+	ackLed.on();
 	//stsLed.turn_off();
 }
 
@@ -56,6 +54,7 @@ void swchOff()
 {
 	LOG_MSG("Switch OFF");
 	digitalWrite(ENB_PIN, LOW);
+	ackLed.off();
 	//stsLed.turn_on();
 }
 
@@ -138,43 +137,29 @@ void notFound() {
 	server.send(404, "text/plain", message);
 }
 
-void display( String message , short line = 0)
+void display(String message, short line = 0 , bool display_on = false)
 {
 	using namespace arduino::utils;
 	LOG_MSG(message);
-	Heltec.display->displayOn();
-	
-	if ( 0 == line ) 
+
+	if ( display_on )
+	{
+		Heltec.display->displayOn();
+		displayTimer = Timer("[Display]");
+		displayTimer.addTask( TIME.getEpochTime() + Timer::HOUR , [](long&) { Heltec.display->displayOff(); });
+	}
+
+	if (0 == line)
 		Heltec.display->clear();
 
-	Heltec.display->setFont(ArialMT_Plain_10);
-	Heltec.display->drawString(0,  line * 13 , message);
+	//Heltec.display->setFont(ArialMT_Plain_10);
+	Heltec.display->drawString(0, line * 13, message);
 	Heltec.display->display();
-
-	displayTimer = Timer("[Display]");
-	displayTimer.addTask( 24 * Timer::HOUR, [](long&) { Heltec.display->displayOff(); });
-	
 }
 
 BLYNK_WRITE(V0)
 {
 	(0 == param.asInt()) ? swchOff() : swchOn();
-}
-
-void onSTAConnected(WiFiEventStationModeConnected ipInfo) {
-	Serial.printf("Connected to %s\r\n", ipInfo.ssid.c_str());
-}
-
-// Start NTP only after IP network is connected
-void onSTAGotIP(WiFiEventStationModeGotIP ipInfo) {
-	Serial.printf("Got IP: %s\r\n", ipInfo.ip.toString().c_str());
-	Serial.printf("Connected: %s\r\n", WiFi.status() == WL_CONNECTED ? "yes" : "no");
-}
-
-// Manage network disconnection
-void onSTADisconnected(WiFiEventStationModeDisconnected event_info) {
-	Serial.printf("Disconnected from SSID: %s\n", event_info.ssid.c_str());
-	Serial.printf("Reason: %d\n", event_info.reason);
 }
 
 // the setup function runs once when you press reset or power the board
@@ -183,14 +168,27 @@ void setup() {
 	pinMode(ENB_PIN, OUTPUT);
 	pinMode(STS_LED_PIN, OUTPUT);
 	pinMode(SWTCH_PIN, INPUT_PULLUP);
+	
 	stsLed.turn_off();
 	server.begin();
+	//The bellow are must to prevent failure on WDT
+	ESP.wdtDisable();
+	ESP.wdtEnable(WDTO_8S);
 
-	Heltec.begin(true /*DisplayEnable Enable*/, false /*Serial Enable*/);
-	Heltec.display->init();
-	Heltec.display->flipScreenVertically();
-	Heltec.display->clear();
+	WiFi.persistent(false);
+	WiFi.disconnect();
 
+	String _HOST("WebSWCH_");
+	_HOST += arduino::utils::Constants::ID();
+
+	{
+		Heltec.begin(true /*DisplayEnable Enable*/, false /*Serial Enable*/);
+		Heltec.display->init();
+		Heltec.display->flipScreenVertically();
+		Heltec.display->clear();
+		Heltec.display->setFont(ArialMT_Plain_10);
+	}
+	
 	EEPROM_Adapter_t::begin(512);
 
 	bool sts = true;
@@ -207,20 +205,16 @@ void setup() {
 		blynk_auth = "";
 
 		LOG_MSG("Setting soft-AP ... ");
-		
-
-		static String _SSID("WebSWCH_");
-		_SSID += arduino::utils::Constants::ID();
 
 		IPAddress local_IP(192, 168, 2, 1);
 		IPAddress gateway(192, 168, 2, 1);
 		IPAddress subnet(255, 255, 255, 0);
-
-		if (WiFi.softAPConfig(local_IP, gateway, subnet) && WiFi.softAP(_SSID.c_str()))
+		
+		if (WiFi.softAPConfig(local_IP, gateway, subnet) && WiFi.softAP(_HOST.c_str()))
 		{
-			LOG_MSG("Soft-AP IP address = " << WiFi.softAPIP().toString() << " (" << _SSID << ")");
-			display(_SSID);
-			display("IP:" + WiFi.softAPIP().toString() , 1 );
+			LOG_MSG("Soft-AP IP address = " << WiFi.softAPIP().toString() << " (" << _HOST << ")");
+			display(_HOST);
+			display("IP:" + WiFi.softAPIP().toString() , 1 ,true);
 		}
 		else
 		{
@@ -232,48 +226,47 @@ void setup() {
 		server.addHandler(new SetUpWiFi_RequestHandler());
 
 		idleTimer.addRecuringTask(TIME.getEpochTime(), 5, [](long&) {stsLed.fade(500); });
-
-		//swchOff();
 	}
 	else
 	{
-		LOG_MSG("Going to connect to " << ssid);
+		LOG_MSG(   "Loaded data ssid "	<< ssid 
+				<< " pass "				<< ssid_password 
+				<< " blynk auth "		<< blynk_auth 
+				<< " blynk domain "		<< blynk_domain 
+				<< " blynk port "		<< blynk_port);
+
+		LOG_MSG("Going to connect to " << ssid << " host name " << _HOST);
+		
 		WiFi.mode(WIFI_STA);
 		WiFi.begin(ssid.c_str(), ssid_password.c_str());
 		WiFi.setAutoReconnect(true);
-		WiFi.hostname("WebSWCH");
-		display(WiFi.hostname());
+		WiFi.hostname(_HOST);
+	
+	   	Blynk.config(blynk_auth.c_str(), blynk_domain.c_str(), blynk_port);
 
-	    LOG_MSG("Loaded data ssid " << ssid << " pass " << ssid_password << " blynk auth " << blynk_auth << " blynk domain " << blynk_domain << " blynk port " << blynk_port);
-		Blynk.config(blynk_auth.c_str(), blynk_domain.c_str(), blynk_port);
-
-		static WiFiEventHandler e1, e2, e3;
-		e1 = WiFi.onStationModeGotIP([](const WiFiEventStationModeGotIP& event) {  display(WiFi.hostname()); display("IP:" + WiFi.localIP().toString(), 1); ESP.wdtFeed();  Blynk.connect(); });// As soon WiFi is connected, start NTP Client
-		//e2 = WiFi.onStationModeDisconnected([](const WiFiEventStationModeDisconnected& event) { display("No WiFi found", 1); /*Blynk.disconnect();*/ });
-		//e3 = WiFi.onStationModeConnected([](const WiFiEventStationModeConnected& event) {   display(WiFi.hostname()); display("Connected to " + event.ssid, 1);});
+// 		static WiFiEventHandler e1, e2, e3;
+// 		static IPAddress myIP;
+// 		e1 = WiFi.onStationModeGotIP([](const WiFiEventStationModeGotIP& event) {  stsLed.rapid_blynk(100);/* DISPLAY_ON = true;*//*LOG_MSG("Got IP " << event.ip.toString());*/ });// As soon WiFi is connected, start NTP Client
+//		e2 = WiFi.onStationModeDisconnected([](const WiFiEventStationModeDisconnected& event) { stsLed.rapid_blynk(100); /* LOG_MSG("Lost connection" );*/ });
+//	  	e3 = WiFi.onStationModeConnected([](const WiFiEventStationModeConnected& event) {   stsLed.rapid_blynk(100);/* DISPLAY_ON = true;*//*LOG_MSG("Connected to network");*/ });
 		
-	//	onGotIPhandler = WiFi.onStationModeGotIP([](const WiFiEventStationModeGotIP& event) {   display(WiFi.hostname()); display( "IP:"+ event.ip.toString() , 1 ); Blynk.connect(500); });
-		//onDisconnect = WiFi.onStationModeDisconnected([](const WiFiEventStationModeDisconnected& event) { display( "No WiFi found" ,1 ); Blynk.disconnect(); });
-
-		idleTimer.addRecuringTask(TIME.getEpochTime(), 3, [](long& io_time) { ESP.wdtFeed(); if (!WiFi.isConnected()) { display(WiFi.hostname()); display("No WiFi found", 1); } });
-
-		idleTimer.addRecuringTask(TIME.getEpochTime(), 7, [](long& io_time) { ESP.wdtFeed(); if (!Blynk.connected()) { display(WiFi.hostname()); display( "no connection to Blynk" ,1 ); } });
+		idleTimer.addRecuringTask(TIME.getEpochTime(), 3, [](long& io_time) {   if (!WiFi.isConnected()) { stsLed.rapid_blynk(500); display(WiFi.SSID()); display("No WiFi found", 1, true); } else { display(WiFi.localIP().toString()); }  });
+		idleTimer.addRecuringTask(TIME.getEpochTime(), 5, [](long& io_time) {   if (!Blynk.connected())  { stsLed.rapid_blynk(500); display(WiFi.SSID()); display("no connection to Blynk", 1 , true); } });
 
 		server.on("/", []() { server.send(200, "text/html", on_off_html);  });
 	}
 
-	server.on("/on", []() { stsLed.rapid_blynk(100); swchOn(); server.send(200, "text/html", success_html);  });
-	server.on("/off", []() { stsLed.rapid_blynk(100); swchOff(); server.send(200, "text/html", success_html);  });
+	server.on("/on",  []() { stsLed.blynk(); swchOn(); server.send(200, "text/html", success_html);  });
+	server.on("/off", []() { stsLed.blynk(); swchOff(); server.send(200, "text/html", success_html);  });
 	
-	idleTimer.addRecuringTask(TIME.getEpochTime(), 2, [](long& io_time) { (swch.getState()) ? stsLed.turn_on() : stsLed.turn_off(); });
+	idleTimer.addRecuringTask(TIME.getEpochTime(), 1, [](long& io_time) { (swch.getState()) ? stsLed.turn_on() : stsLed.turn_off(); });
 }
+
 
 // the loop function runs over and over again until power down or reset
 void loop() {
 	swch.run();
 	idleTimer.run();
-	server.handleClient();
-	Blynk.run();
 	TIME.run();
 	displayTimer.run();
 
@@ -283,7 +276,10 @@ void loop() {
 		display("Cleaning eeprom");
 		EEPROM_Adapter_t::clean();
 		stsLed.rapid_blynk(500);
+		RESET();
 	});
 
+	server.handleClient();
 	button.run();
+	Blynk.run();
 }
