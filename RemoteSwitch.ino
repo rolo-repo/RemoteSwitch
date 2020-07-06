@@ -11,6 +11,8 @@
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
 #include "EEPROM_Adapter.h"
+#include <ESP8266SSDP.h>  
+
 #include <TimeManager.h>
 
 #include <BlynkSimpleEsp8266.h>
@@ -254,6 +256,24 @@ void setup() {
 		idleTimer.addRecuringTask(TIME.getEpochTime(), 5, [](long& io_time) {   if (!Blynk.connected())  { stsLed.rapid_blynk(500); display(WiFi.SSID()); display("no connection to Blynk", 1 , true); } });
 
 		server.on("/", []() { server.send(200, "text/html", on_off_html);  });
+
+		/*Setup SSDP*/
+		server.on("/description.xml", HTTP_GET, []() {
+			SSDP.schema(server.client());
+		});
+
+		SSDP.setDeviceType("upnp:rootdevice");
+		SSDP.setSchemaURL("description.xml");
+		SSDP.setHTTPPort(80);
+		SSDP.setName(_HOST);
+		SSDP.setSerialNumber(arduino::utils::Constants::ID());
+		SSDP.setURL("/");
+		SSDP.setModelName(_HOST);
+		SSDP.setModelNumber(arduino::utils::Constants::ID());
+		SSDP.setModelURL("/");
+		SSDP.setManufacturer("");
+		SSDP.setManufacturerURL("/");
+		SSDP.begin();
 	}
 
 	server.on("/on",  []() { stsLed.blynk(); swchOn(); server.send(200, "text/html", success_html);  });
