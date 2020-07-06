@@ -6,4 +6,4 @@ the Blynk application could be downloaded from follwoing link
 2. Touch the QR-code icon and point the camera to the code below
 3. Enjoy my app!
 
-![The App](https://github.com/rolo-repo/RemoteSwitch/barcode.png)
+![The App](https://github.com/rolo-repo/RemoteSwitch/blob/master/barcode.png)
